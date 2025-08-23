@@ -1,4 +1,4 @@
-name: Kafka Infra (simple run)
+name: Kafka + Postgres Infra (simple run)
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
             mkdir -p ~/kafka && cd ~/kafka
             PUB_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
 
-            # Write docker-compose.yml safely (no heredoc pitfalls)
+            # Write docker-compose.yml for Kafka
             printf '%s\n' \
               'version: "3.8"' \
               'services:' \
@@ -48,4 +48,45 @@ jobs:
               > docker-compose.yml
 
             # Start Kafka
+            sudo docker compose -f docker-compose.yml up -d
+
+  postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Postgres on VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: opc
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            # Install Docker if missing
+            if ! command -v docker >/dev/null 2>&1; then
+              curl -fsSL https://get.docker.com | sh
+              sudo systemctl enable --now docker
+            fi
+
+            mkdir -p ~/postgres && cd ~/postgres
+
+            # Write docker-compose.yml for Postgres
+            printf '%s\n' \
+              'version: "3.8"' \
+              'services:' \
+              '  postgres:' \
+              '    image: postgres:16-alpine' \
+              '    container_name: postgres' \
+              '    restart: unless-stopped' \
+              '    ports:' \
+              '      - "5432:5432"' \
+              '    environment:' \
+              '      - POSTGRES_USER=postgres' \
+              '      - POSTGRES_PASSWORD=postgres' \
+              '      - POSTGRES_DB=order_management_db' \
+              '    volumes:' \
+              '      - pgdata:/var/lib/postgresql/data' \
+              'volumes:' \
+              '  pgdata:' \
+              > docker-compose.yml
+
+            # Start Postgres
             sudo docker compose -f docker-compose.yml up -d
