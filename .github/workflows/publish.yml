@@ -1,4 +1,4 @@
-name: Kafka Infra (Docker KRaft status only)
+name: Kafka Infra (just install & run)
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
   kafka:
     runs-on: ubuntu-latest
     steps:
-      - name: Check Kafka (KRaft mode) status on VM
+      - name: Install & Run Kafka (KRaft)
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VM_HOST }}
@@ -18,22 +18,19 @@ jobs:
           script: |
             set -euo pipefail
 
-            # Ensure Docker
+            # Install Docker if missing
             if ! command -v docker >/dev/null 2>&1; then
-              echo "Installing Docker..."
               curl -fsSL https://get.docker.com | sh
-              sudo systemctl enable --now docker
-            else
               sudo systemctl enable --now docker
             fi
 
             mkdir -p ~/kafka
             cd ~/kafka
 
-            # Create compose file if missing (KRaft mode). NOTE: EOF is FLUSH-LEFT.
-            if [ ! -f docker-compose.yml ]; then
-              PUB_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
-              cat > docker-compose.yml <<EOF
+            PUB_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
+
+            # KRaft (no Zookeeper)
+            cat > docker-compose.yml <<EOF
 version: "3.8"
 services:
   kafka:
@@ -54,11 +51,6 @@ services:
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://${PUB_IP}:9092
       - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
   EOF
-  fi
   
-  # Status only (do NOT start it)
-  echo "===== docker compose ps ====="
-  sudo docker compose -f docker-compose.yml ps || true
-  echo
-  echo "===== docker ps ====="
-  sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+  # Start
+  sudo docker compose -f docker-compose.yml up -d
