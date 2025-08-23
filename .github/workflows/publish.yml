@@ -1,4 +1,4 @@
-name: Kafka Infra (just install & run)
+name: Kafka Infra (simple run)
 
 on:
   push:
@@ -9,48 +9,43 @@ jobs:
   kafka:
     runs-on: ubuntu-latest
     steps:
-      - name: Install & Run Kafka (KRaft)
+      - name: Run Kafka (KRaft mode) on VM
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VM_HOST }}
           username: opc
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            set -euo pipefail
-
             # Install Docker if missing
             if ! command -v docker >/dev/null 2>&1; then
               curl -fsSL https://get.docker.com | sh
               sudo systemctl enable --now docker
             fi
 
-            mkdir -p ~/kafka
-            cd ~/kafka
-
+            mkdir -p ~/kafka && cd ~/kafka
             PUB_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
 
-            # KRaft (no Zookeeper)
-            cat > docker-compose.yml <<EOF
-version: "3.8"
-services:
-  kafka:
-    image: bitnami/kafka:3.7
-    container_name: kafka
-    restart: unless-stopped
-    ports:
-      - "9092:9092"
-    environment:
-      - ALLOW_PLAINTEXT_LISTENER=yes
-      - KAFKA_ENABLE_KRAFT=yes
-      - KAFKA_CFG_PROCESS_ROLES=broker,controller
-      - KAFKA_CFG_NODE_ID=1
-      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://${PUB_IP}:9092
-      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
-  EOF
-  
-  # Start
-  sudo docker compose -f docker-compose.yml up -d
+            # Write docker-compose.yml safely (no heredoc pitfalls)
+            printf '%s\n' \
+              'version: "3.8"' \
+              'services:' \
+              '  kafka:' \
+              '    image: bitnami/kafka:3.7' \
+              '    container_name: kafka' \
+              '    ports:' \
+              '      - "9092:9092"' \
+              '    environment:' \
+              '      - ALLOW_PLAINTEXT_LISTENER=yes' \
+              '      - KAFKA_ENABLE_KRAFT=yes' \
+              '      - KAFKA_CFG_PROCESS_ROLES=broker,controller' \
+              '      - KAFKA_CFG_NODE_ID=1' \
+              '      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093' \
+              '      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093' \
+              '      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT' \
+              '      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER' \
+              "      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://${PUB_IP}:9092" \
+              '      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true' \
+              > docker-compose.yml
+
+            # Start Kafka
+            sudo docker compose -f docker-compose.yml up -d
