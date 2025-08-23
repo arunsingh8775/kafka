@@ -1,12 +1,12 @@
-name: Kafka Infra (start/stop/reload)
+name: Kafka Infra (Docker start/stop/reload)
 
 on:
   push:
-    branches: ["main"]       # runs on every push to main
-  workflow_dispatch:          # still allows manual run
+    branches: ["main"]
+  workflow_dispatch:
     inputs:
       action:
-        description: start|stop|restart|status
+        description: start|stop|restart|status|logs
         required: true
         default: "status"
 
@@ -14,39 +14,88 @@ jobs:
   kafka:
     runs-on: ubuntu-latest
     steps:
-      - name: Control Kafka & Zookeeper on VM
+      - name: Manage Kafka via Docker on VM
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VM_HOST }}
           username: opc
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
+            set -euo pipefail
+
+            # --- Ensure Docker is installed and running ---
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "Installing Docker..."
+              curl -fsSL https://get.docker.com | sh
+              sudo systemctl enable --now docker
+            else
+              sudo systemctl enable --now docker
+            fi
+
+            mkdir -p ~/kafka
+            cd ~/kafka
+
+            # Public IP for advertised listeners (fallback to 127.0.0.1)
+            PUB_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || echo "127.0.0.1")
+
+            # --- Write docker-compose.yml (Zookeeper-based single broker) ---
+            # Uses Bitnami multi-arch images (OK on Ampere).
+            cat > docker-compose.yml <<EOF
+            version: "3.8"
+            services:
+              zookeeper:
+                image: bitnami/zookeeper:3.9
+                container_name: zookeeper
+                restart: unless-stopped
+                ports:
+                  - "2181:2181"
+                environment:
+                  - ALLOW_ANONYMOUS_LOGIN=yes
+
+              kafka:
+                image: bitnami/kafka:3.7
+                container_name: kafka
+                restart: unless-stopped
+                ports:
+                  - "9092:9092"
+                environment:
+                  - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+                  - ALLOW_PLAINTEXT_LISTENER=yes
+                  - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+                  - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://${PUB_IP}:9092
+                  - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+                depends_on:
+                  - zookeeper
+            EOF
+
+            # --- Action dispatcher ---
             case "${{ github.event.inputs.action }}" in
               start)
-                if systemctl is-active --quiet zookeeper; then
-                  echo "Zookeeper already running"
-                else
-                  echo "Starting Zookeeper..."
-                  sudo systemctl start zookeeper
-                fi
-
-                if systemctl is-active --quiet kafka; then
-                  echo "Kafka already running"
-                else
-                  echo "Starting Kafka..."
-                  sudo systemctl start kafka
-                fi
+                echo "Starting Kafka stack..."
+                sudo docker compose -f docker-compose.yml up -d
                 ;;
               stop)
-                sudo systemctl stop kafka zookeeper
+                echo "Stopping Kafka stack..."
+                sudo docker compose -f docker-compose.yml down
                 ;;
               restart)
-                sudo systemctl restart zookeeper kafka
+                echo "Restarting Kafka stack..."
+                sudo docker compose -f docker-compose.yml down
+                sudo docker compose -f docker-compose.yml up -d
                 ;;
-              status|*)
-                echo "===== Zookeeper ====="
-                systemctl status zookeeper --no-pager -n 5 || true
-                echo "===== Kafka ====="
-                systemctl status kafka --no-pager -n 5 || true
+              status)
+                echo "===== docker compose ps ====="
+                sudo docker compose -f docker-compose.yml ps
+                echo
+                echo "===== docker ps ====="
+                sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+                ;;
+              logs)
+                echo "===== Last 200 lines of logs ====="
+                sudo docker compose -f docker-compose.yml logs --no-color --tail=200
+                ;;
+              *)
+                echo "Unknown action: ${{ github.event.inputs.action }}" >&2
+                exit 1
                 ;;
             esac
