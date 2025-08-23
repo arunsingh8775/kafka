@@ -36,17 +36,15 @@ jobs:
                 fi
                 ;;
               stop)
-                echo "Stopping Kafka and Zookeeper..."
                 sudo systemctl stop kafka zookeeper
                 ;;
               restart)
-                echo "Restarting Zookeeper and Kafka..."
                 sudo systemctl restart zookeeper kafka
                 ;;
               status|*)
                 echo "===== Zookeeper ====="
-                sudo systemctl status zookeeper --no-pager -n 5 || true
+                systemctl status zookeeper --no-pager -n 5 || true
                 echo "===== Kafka ====="
-                sudo systemctl status kafka --no-pager -n 5 || true
+                systemctl status kafka --no-pager -n 5 || true
                 ;;
             esac
