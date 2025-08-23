@@ -1,7 +1,9 @@
 name: Kafka Infra (start/stop/reload)
 
 on:
-  workflow_dispatch:
+  push:
+    branches: ["main"]       # runs on every push to main
+  workflow_dispatch:          # still allows manual run
     inputs:
       action:
         description: start|stop|restart|status
