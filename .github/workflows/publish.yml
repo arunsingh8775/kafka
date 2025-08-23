@@ -1,0 +1,52 @@
+name: Kafka Infra (start/stop/reload)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: start|stop|restart|status
+        required: true
+        default: "status"
+
+jobs:
+  kafka:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Control Kafka & Zookeeper on VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: opc
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            case "${{ github.event.inputs.action }}" in
+              start)
+                if systemctl is-active --quiet zookeeper; then
+                  echo "Zookeeper already running"
+                else
+                  echo "Starting Zookeeper..."
+                  sudo systemctl start zookeeper
+                fi
+
+                if systemctl is-active --quiet kafka; then
+                  echo "Kafka already running"
+                else
+                  echo "Starting Kafka..."
+                  sudo systemctl start kafka
+                fi
+                ;;
+              stop)
+                echo "Stopping Kafka and Zookeeper..."
+                sudo systemctl stop kafka zookeeper
+                ;;
+              restart)
+                echo "Restarting Zookeeper and Kafka..."
+                sudo systemctl restart zookeeper kafka
+                ;;
+              status|*)
+                echo "===== Zookeeper ====="
+                sudo systemctl status zookeeper --no-pager -n 5 || true
+                echo "===== Kafka ====="
+                sudo systemctl status kafka --no-pager -n 5 || true
+                ;;
+            esac
