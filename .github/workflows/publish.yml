@@ -16,39 +16,53 @@ jobs:
           username: opc
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            # Install Docker if missing
-            if ! command -v docker >/dev/null 2>&1; then
-              curl -fsSL https://get.docker.com | sh
-              sudo systemctl enable --now docker
-            fi
+            set -euo pipefail
+
+            # Ensure shared network exists (for container-to-container DNS)
+            sudo docker network inspect backend >/dev/null 2>&1 || sudo docker network create backend
 
             mkdir -p ~/kafka && cd ~/kafka
-            PUB_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
 
-            # Write docker-compose.yml for Kafka
-            printf '%s\n' \
-              'version: "3.8"' \
-              'services:' \
-              '  kafka:' \
-              '    image: bitnami/kafka:3.7' \
-              '    container_name: kafka' \
-              '    ports:' \
-              '      - "9092:9092"' \
-              '    environment:' \
-              '      - ALLOW_PLAINTEXT_LISTENER=yes' \
-              '      - KAFKA_ENABLE_KRAFT=yes' \
-              '      - KAFKA_CFG_PROCESS_ROLES=broker,controller' \
-              '      - KAFKA_CFG_NODE_ID=1' \
-              '      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093' \
-              '      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093' \
-              '      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT' \
-              '      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER' \
-              "      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://${PUB_IP}:9092" \
-              '      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true' \
-              > docker-compose.yml
+            # Public IP (only used if you want external Kafka clients)
+            PUB_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
 
-            # Start Kafka
-            sudo docker compose -f docker-compose.yml up -d
+            cat > docker-compose.yml <<'YAML'
+            services:
+              kafka:
+                image: bitnami/kafka:3.7
+                container_name: kafka
+                restart: unless-stopped
+                # Expose 9092 if you need to connect from outside the VM
+                ports:
+                  - "9092:9092"
+                environment:
+                  - ALLOW_PLAINTEXT_LISTENER=yes
+                  - KAFKA_ENABLE_KRAFT=yes
+                  - KAFKA_CFG_PROCESS_ROLES=broker,controller
+                  - KAFKA_CFG_NODE_ID=1
+                  - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+                  - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+                  - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+                  - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+                  # Internal for other containers on 'backend' network
+                  - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+                  - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+                networks: [backend]
+                healthcheck:
+                  test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+                  interval: 15s
+                  timeout: 5s
+                  retries: 20
+            networks:
+              backend:
+                external: true
+            YAML
+
+            # If you ALSO want outside-the-VM clients, append the public IP to advertised listeners:
+            sudo sed -i "s#PLAINTEXT://kafka:9092#PLAINTEXT://kafka:9092,PLAINTEXT://$PUB_IP:9092#g" docker-compose.yml
+
+            sudo docker compose up -d
+            sudo docker compose ps
 
   postgres:
     runs-on: ubuntu-latest
@@ -60,33 +74,40 @@ jobs:
           username: opc
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            # Install Docker if missing
-            if ! command -v docker >/dev/null 2>&1; then
-              curl -fsSL https://get.docker.com | sh
-              sudo systemctl enable --now docker
-            fi
+            set -euo pipefail
+
+            # Ensure shared network exists
+            sudo docker network inspect backend >/dev/null 2>&1 || sudo docker network create backend
 
             mkdir -p ~/postgres && cd ~/postgres
 
-            # Write docker-compose.yml for Postgres
-            printf '%s\n' \
-              'version: "3.8"' \
-              'services:' \
-              '  postgres:' \
-              '    image: postgres:16-alpine' \
-              '    container_name: postgres' \
-              '    restart: unless-stopped' \
-              '    ports:' \
-              '      - "5432:5432"' \
-              '    environment:' \
-              '      - POSTGRES_USER=postgres' \
-              '      - POSTGRES_PASSWORD=postgres' \
-              '      - POSTGRES_DB=order_management_db' \
-              '    volumes:' \
-              '      - pgdata:/var/lib/postgresql/data' \
-              'volumes:' \
-              '  pgdata:' \
-              > docker-compose.yml
+            cat > docker-compose.yml <<'YAML'
+            services:
+              postgres:
+                image: postgres:16-alpine
+                container_name: postgres
+                restart: unless-stopped
+                ports:
+                  - "5432:5432"
+                environment:
+                  - POSTGRES_USER=postgres
+                  - POSTGRES_PASSWORD=postgres
+                  - POSTGRES_DB=order_management
+                volumes:
+                  - pgdata:/var/lib/postgresql/data
+                networks: [backend]
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U postgres -d order_management -h 127.0.0.1 -p 5432"]
+                  interval: 5s
+                  timeout: 3s
+                  retries: 20
+                  start_period: 10s
+            volumes:
+              pgdata:
+            networks:
+              backend:
+                external: true
+            YAML
 
-            # Start Postgres
-            sudo docker compose -f docker-compose.yml up -d
+            sudo docker compose up -d
+            sudo docker compose ps
