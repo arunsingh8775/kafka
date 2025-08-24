@@ -1,4 +1,4 @@
-name: Deploy Kafka & Postgres (self-contained)
+name: Kafka + Postgres Infra (simple run)
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  infra:
+  kafka:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy infra on VM
+      - name: Run Kafka (KRaft mode) on VM
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VM_HOST }}
@@ -17,18 +17,20 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
             set -euo pipefail
-            mkdir -p ~/infra/kafka ~/infra/postgres
 
-            # ----- Write Kafka compose -----
-            cat > ~/infra/kafka/docker-compose.kafka.yml <<'YAML'
-            version: "3.8"
+            mkdir -p ~/kafka && cd ~/kafka
+
+            # Public IP (only used if you want external Kafka clients)
+            PUB_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+
+            cat > docker-compose.yml <<'YAML'
             services:
               kafka:
                 image: bitnami/kafka:3.7
                 container_name: kafka
                 restart: unless-stopped
                 ports:
-                  - "9092:9092"   # remove if you don't need external clients
+                  - "9092:9092"
                 environment:
                   - ALLOW_PLAINTEXT_LISTENER=yes
                   - KAFKA_ENABLE_KRAFT=yes
@@ -47,16 +49,34 @@ jobs:
                   retries: 20
             YAML
 
-            # ----- Write Postgres compose -----
-            cat > ~/infra/postgres/docker-compose.postgres.yml <<'YAML'
-            version: "3.8"
+            # If you ALSO want outside-the-VM clients, append the public IP to advertised listeners:
+            sudo sed -i "s#PLAINTEXT://kafka:9092#PLAINTEXT://kafka:9092,PLAINTEXT://$PUB_IP:9092#g" docker-compose.yml
+
+            sudo docker compose up -d
+            sudo docker compose ps
+
+  postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Postgres on VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: opc
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            set -euo pipefail
+
+            mkdir -p ~/postgres && cd ~/postgres
+
+            cat > docker-compose.yml <<'YAML'
             services:
               postgres:
                 image: postgres:16-alpine
                 container_name: postgres
                 restart: unless-stopped
                 ports:
-                  - "5432:5432"   # remove if you don't want external access
+                  - "5432:5432"
                 environment:
                   - POSTGRES_USER=postgres
                   - POSTGRES_PASSWORD=postgres
@@ -67,30 +87,11 @@ jobs:
                   test: ["CMD-SHELL", "pg_isready -U postgres -d order_management -h 127.0.0.1 -p 5432"]
                   interval: 5s
                   timeout: 3s
-                  retries: 30
+                  retries: 20
                   start_period: 10s
             volumes:
               pgdata:
             YAML
 
-            echo "== Start Kafka =="
-            docker compose -f ~/infra/kafka/docker-compose.kafka.yml up -d
-            docker compose -f ~/infra/kafka/docker-compose.kafka.yml ps || true
-
-            echo "== Start Postgres =="
-            docker compose -f ~/infra/postgres/docker-compose.postgres.yml up -d
-            docker compose -f ~/infra/postgres/docker-compose.postgres.yml ps || true
-
-            echo "== Wait for Postgres health =="
-            for i in {1..60}; do
-              state=$(docker inspect -f '{{.State.Health.Status}}' postgres 2>/dev/null || echo starting)
-              [ "$state" = healthy ] && { echo "Postgres healthy"; break; }
-              sleep 3
-            done
-
-            echo "== Ensure DB (order_management) exists =="
-            docker exec -e PGPASSWORD=postgres postgres \
-              sh -c "psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c \
-              \"DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_database WHERE datname='order_management') THEN CREATE DATABASE order_management; END IF; END \$\$;\""
-
-            echo "== Done. Kafka & Postgres are up. =="
+            sudo docker compose up -d
+            sudo docker compose ps
