@@ -17,8 +17,11 @@ jobs:
           host: ${{ secrets.VM_HOST }}
           username: opc
           key: ${{ secrets.VM_SSH_KEY }}
-          source: "kafka/docker-compose.kafka.yml,kafka/docker-compose.postgres.yml"
+          source: |
+            kafka/docker-compose.kafka.yml
+            kafka/docker-compose.postgres.yml
           target: "~/infra"
+          overwrite: true
 
       - name: Start stacks on VM
         uses: appleboy/ssh-action@v1.2.0
