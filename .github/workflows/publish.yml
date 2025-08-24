@@ -11,28 +11,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Helpful diag: make sure paths are what we expect
+      # DEBUG: show where the compose files actually are
       - name: List repo files
         run: |
           pwd
+          echo "== Top level =="
           ls -la
-          echo "----"
-          ls -la *.yml || true
-          echo "----"
-          find . -maxdepth 2 -type f -name "docker-compose*.yml" -print
+          echo "== Any docker-compose*.yml in repo (2 levels) =="
+          find . -maxdepth 2 -type f -name "docker-compose*.yml" -print -exec ls -l {} \;
 
+      # Robust upload: match regardless of folder
       - name: Upload compose files to VM
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VM_HOST }}
           username: opc
           key: ${{ secrets.VM_SSH_KEY }}
-          # These paths are relative to the repo root
-          source: |
-            docker-compose.kafka.yml
-            docker-compose.postgres.yml
+          # Upload any compose files found anywhere in the repo
+          source: "**/docker-compose*.yml"
           target: "~/infra"
           overwrite: true
+          strip_components: 0   # keep their relative paths
 
       - name: Start stacks on VM
         uses: appleboy/ssh-action@v1.2.0
@@ -43,17 +42,25 @@ jobs:
           script: |
             set -euo pipefail
 
-            mkdir -p ~/infra
+            echo "== Files synced to ~/infra =="
+            find ~/infra -maxdepth 3 -type f -name "docker-compose*.yml" -print
+
+            # Adjust these paths if your files live in a subfolder
+            KAFKA_YML=$(find ~/infra -type f -name "docker-compose.kafka.yml" | head -n1)
+            PG_YML=$(find ~/infra -type f -name "docker-compose.postgres.yml" | head -n1)
+
+            if [ -z "${KAFKA_YML:-}" ] || [ -z "${PG_YML:-}" ]; then
+              echo "ERROR: Could not find docker-compose.kafka.yml or docker-compose.postgres.yml under ~/infra"
+              exit 1
+            fi
 
             echo "== Kafka =="
-            cd ~/infra
-            docker compose -f docker-compose.kafka.yml up -d
-            docker compose -f docker-compose.kafka.yml ps || true
+            docker compose -f "$KAFKA_YML" up -d
+            docker compose -f "$KAFKA_YML" ps || true
 
             echo "== Postgres =="
-            cd ~/infra
-            docker compose -f docker-compose.postgres.yml up -d
-            docker compose -f docker-compose.postgres.yml ps || true
+            docker compose -f "$PG_YML" up -d
+            docker compose -f "$PG_YML" ps || true
 
             echo "== Ensure DB (order_management) exists =="
             docker exec -e PGPASSWORD=postgres postgres \
